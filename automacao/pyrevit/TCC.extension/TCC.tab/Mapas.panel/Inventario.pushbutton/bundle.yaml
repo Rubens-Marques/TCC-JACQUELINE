@@ -1,0 +1,5 @@
+title: Inventário
+tooltip: >-
+  Lê o modelo aberto (sem alterar nada) e salva inventario_<arquivo>.json ao lado do .rvt:
+  geolocalização, coordenadas compartilhadas, topografia, DWGs e suas camadas, vistas e tipos.
+author: TCC CTJ

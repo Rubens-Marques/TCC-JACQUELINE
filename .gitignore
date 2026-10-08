@@ -1,0 +1,21 @@
+# Modelos Revit: grandes demais para o GitHub (limite 100 MB/arquivo) — ver revit/README.md
+*.rvt
+*.rfa
+*.rte
+*.rft
+*.000?.rvt
+*.000?.rfa
+*_backup/
+*.dwl
+*.dwl2
+
+# Dados GIS brutos (baixados/reprocessáveis); só os processados vão para o git
+dados/brutos/*
+!dados/brutos/.gitkeep
+
+# Saídas locais
+inventario_*.json
+__pycache__/
+*.pyc
+.DS_Store
+Thumbs.db
