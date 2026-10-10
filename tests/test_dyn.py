@@ -12,6 +12,7 @@ SCRIPTS = ROOT / "automacao" / "scripts"
 GRAFOS = {
     "TCC_Inventario.dyn": ["tcc_inventario.py"],
     "TCC_Lotes.dyn": ["tcc_geometria.py", "tcc_lotes.py"],
+    "TCC_Salas.dyn": ["tcc_geometria.py", "tcc_salas.py"],
 }
 
 
@@ -62,6 +63,11 @@ class DynTest(unittest.TestCase):
         self.assertEqual(
             json.loads(entradas["StringInputNode"]["InputValue"])["limite"], 10
         )
+
+    def test_salas_nasce_em_simulacao(self):
+        grafo = carregar("TCC_Salas.dyn")
+        booleano = [n for n in grafo["Nodes"] if n["NodeType"] == "BooleanInputNode"]
+        self.assertIs(booleano[0]["InputValue"], False)
 
     def test_entradas_ligadas_na_ordem_do_script(self):
         grafo = carregar("TCC_Lotes.dyn")

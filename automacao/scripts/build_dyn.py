@@ -69,6 +69,33 @@ CONFIG_LOTES = json.dumps(
 )
 
 
+ENTRADA_SALAS = CABECALHO_DYNAMO + """
+try:
+    OUT = executar(
+        _doc,
+        DB,
+        bool(IN[0]),
+        IN[1],
+        iniciar=TransactionManager.Instance.ForceCloseTransaction,
+    )
+""" + ERRO_DYNAMO
+
+CONFIG_SALAS = json.dumps(
+    {
+        "niveis": [],
+        "parede_interna": "",
+        "parede_externa": "",
+        "externa_face_interna": True,
+        "junta_max_m": 0.30,
+        "sem_parede": ["patio", "pergolado", "praca", "estacionamento", "externa", "quadra descoberta"],
+        "criar_ambientes": True,
+        "piso_oficial": "",
+        "mapa_setores": {},
+    },
+    ensure_ascii=False,
+)
+
+
 def uid():
     return str(uuid.uuid4())
 
@@ -244,6 +271,20 @@ SPECS = (
             inputs=(
                 ("bool", "Executar (False = simulação)", False),
                 ("string", "Configuração (JSON)", CONFIG_LOTES),
+            ),
+        ),
+    ),
+    (
+        "TCC_Salas.dyn",
+        graph(
+            "TCC Salas",
+            "Pisos-sala (nome no Comentários, setor no material) → paredes, ambientes e tabela de áreas.",
+            ["tcc_geometria.py", "tcc_salas.py"],
+            ENTRADA_SALAS,
+            "Rode primeiro com False (simulação) num pavimento: \"niveis\": [\"Térreo\"]. Depois True. Ctrl+Z desfaz tudo.",
+            inputs=(
+                ("bool", "Executar (False = simulação)", False),
+                ("string", "Configuração (JSON)", CONFIG_SALAS),
             ),
         ),
     ),
