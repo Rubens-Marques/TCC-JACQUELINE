@@ -1,5 +1,5 @@
 {
-  "Uuid": "92716cf6-385b-480a-a715-f8534f267010",
+  "Uuid": "2196e0fa-b834-4036-b235-380fe842f860",
   "IsCustomNode": false,
   "Description": "Somente leitura: localização, coordenadas, topografia, DWGs, vistas e tipos.",
   "Name": "TCC Inventário",
@@ -15,11 +15,11 @@
       "Code": "# -*- coding: utf-8 -*-\n\"\"\"Inventário somente leitura do modelo aberto (pensado para o TERRENO - JD IPE-TCC.rvt).\n\nResponde o que os mapas precisam saber antes de desenhar qualquer coisa:\nonde o terreno está (geolocalização e coordenadas compartilhadas), qual a faixa de\ncotas, quais DWGs/vínculos existem (e suas camadas) e que vistas/tipos já estão no arquivo.\n\nRoda em pyRevit (IronPython 2.7 ou CPython) e no nó Python do Dynamo — por isso nada de\nf-strings. Não abre transação: não altera o modelo.\n\"\"\"\n\nimport json\nimport math\nimport os\n\nFT_TO_M = 0.3048\n\n\ndef _m(value_ft):\n    return round(value_ft * FT_TO_M, 3)\n\n\ndef _xyz(pt):\n    return [_m(pt.X), _m(pt.Y), _m(pt.Z)]\n\n\ndef _bbox(element, to_shared):\n    bb = element.get_BoundingBox(None)\n    if bb is None:\n        return None\n    return {\n        \"interno_min\": _xyz(bb.Min),\n        \"interno_max\": _xyz(bb.Max),\n        \"compartilhado_min\": _xyz(to_shared.OfPoint(bb.Min)),\n        \"compartilhado_max\": _xyz(to_shared.OfPoint(bb.Max)),\n    }\n\n\ndef _int_id(element_id):\n    # Revit 2026 removeu ElementId.IntegerValue; .Value existe desde o 2024.\n    return int(\n        element_id.Value if hasattr(element_id, \"Value\") else element_id.IntegerValue\n    )\n\n\ndef _name(element):\n    try:\n        return element.Name\n    except Exception:\n        return None\n\n\ndef _type_name(doc, element):\n    type_id = element.GetTypeId()\n    if type_id is None or _int_id(type_id) < 0:\n        return None\n    return _name(doc.GetElement(type_id))\n\n\ndef _localizacao(doc, DB):\n    site = doc.SiteLocation\n    position = doc.ActiveProjectLocation.GetProjectPosition(DB.XYZ.Zero)\n    survey = DB.BasePoint.GetSurveyPoint(doc)\n    base = DB.BasePoint.GetProjectBasePoint(doc)\n    return {\n        \"local\": site.PlaceName,\n        \"latitude_graus\": round(math.degrees(site.Latitude), 7),\n        \"longitude_graus\": round(math.degrees(site.Longitude), 7),\n        \"local_ativo\": doc.ActiveProjectLocation.Name,\n        \"posicao_projeto\": {\n            \"leste_oeste_m\": _m(position.EastWest),\n            \"norte_sul_m\": _m(position.NorthSouth),\n            \"elevacao_m\": _m(position.Elevation),\n            \"angulo_norte_verdadeiro_graus\": round(math.degrees(position.Angle), 6),\n        },\n        \"ponto_levantamento\": {\n            \"interno\": _xyz(survey.Position),\n            \"compartilhado\": _xyz(survey.SharedPosition),\n        },\n        \"ponto_base_projeto\": {\n            \"interno\": _xyz(base.Position),\n            \"compartilhado\": _xyz(base.SharedPosition),\n        },\n    }\n\n\ndef _coletar(doc, DB, cls=None, categoria=None):\n    collector = DB.FilteredElementCollector(doc)\n    if cls is not None:\n        collector = collector.OfClass(cls)\n    if categoria is not None:\n        collector = collector.OfCategory(categoria)\n    return list(collector.WhereElementIsNotElementType())\n\n\ndef _classe_topografia_legada(DB):\n    # No CPython3 do Dynamo, subnamespaces nem sempre aparecem como atributo do módulo.\n    try:\n        return DB.Architecture.TopographySurface\n    except AttributeError:\n        from Autodesk.Revit.DB.Architecture import TopographySurface\n\n        return TopographySurface\n\n\ndef _topografia(doc, DB, to_shared):\n    itens = []\n    classes = []\n    if hasattr(DB, \"Toposolid\"):\n        classes.append((\"Toposolid\", DB.Toposolid))\n    classes.append((\"TopographySurface\", _classe_topografia_legada(DB)))\n    for rotulo, cls in classes:\n        for el in _coletar(doc, DB, cls=cls):\n            itens.append(\n                {\n                    \"classe\": rotulo,\n                    \"id\": _int_id(el.Id),\n                    \"tipo\": _type_name(doc, el),\n                    \"caixa\": _bbox(el, to_shared),\n                }\n            )\n    return itens\n\n\ndef _cads(doc, DB, to_shared):\n    itens = []\n    for el in _coletar(doc, DB, cls=DB.ImportInstance):\n        camadas = []\n        if el.Category is not None:\n            camadas = sorted(sub.Name for sub in el.Category.SubCategories)\n        itens.append(\n            {\n                \"id\": _int_id(el.Id),\n                \"nome\": el.Category.Name if el.Category is not None else _name(el),\n                \"vinculado\": el.IsLinked,\n                \"caixa\": _bbox(el, to_shared),\n                \"camadas\": camadas,\n            }\n        )\n    return itens\n\n\ndef _vinculos_revit(doc, DB):\n    itens = []\n    for el in _coletar(doc, DB, cls=DB.RevitLinkInstance):\n        linked = el.GetLinkDocument()\n        itens.append(\n            {\n                \"id\": _int_id(el.Id),\n                \"nome\": _name(el),\n                \"carregado\": linked is not None,\n                \"arquivo\": linked.Title if linked is not None else None,\n            }\n        )\n    return itens\n\n\ndef _niveis(doc, DB):\n    niveis = [(lv.Name, _m(lv.Elevation)) for lv in _coletar(doc, DB, cls=DB.Level)]\n    return [{\"nome\": n, \"elevacao_m\": e} for n, e in sorted(niveis, key=lambda t: t[1])]\n\n\ndef _escala(view):\n    try:\n        return view.Scale or None\n    except Exception:\n        return None\n\n\ndef _vistas(doc, DB):\n    itens = []\n    for v in DB.FilteredElementCollector(doc).OfClass(DB.View):\n        if v.IsTemplate:\n            continue\n        itens.append(\n            {\n                \"nome\": _name(v),\n                \"tipo\": str(v.ViewType),\n                \"escala\": _escala(v),\n            }\n        )\n    return sorted(itens, key=lambda d: (d[\"tipo\"], d[\"nome\"] or \"\"))\n\n\ndef _nomes_de_tipos(doc, DB, cls):\n    nomes = (_name(t) for t in DB.FilteredElementCollector(doc).OfClass(cls))\n    return sorted(n for n in nomes if n)\n\n\ndef _estilos_de_linha(doc, DB):\n    linhas = doc.Settings.Categories.get_Item(DB.BuiltInCategory.OST_Lines)\n    return sorted(sub.Name for sub in linhas.SubCategories)\n\n\ndef inventariar(doc, app_version, DB):\n    to_shared = doc.ActiveProjectLocation.GetTotalTransform().Inverse\n    return {\n        \"arquivo\": doc.Title,\n        \"caminho\": doc.PathName,\n        \"revit\": app_version,\n        \"localizacao\": _localizacao(doc, DB),\n        \"niveis\": _niveis(doc, DB),\n        \"topografia\": _topografia(doc, DB, to_shared),\n        \"cads\": _cads(doc, DB, to_shared),\n        \"vinculos_revit\": _vinculos_revit(doc, DB),\n        \"vistas\": _vistas(doc, DB),\n        \"tipos_regiao_preenchida\": _nomes_de_tipos(doc, DB, DB.FilledRegionType),\n        \"estilos_de_linha\": _estilos_de_linha(doc, DB),\n        \"folhas\": len(list(DB.FilteredElementCollector(doc).OfClass(DB.ViewSheet))),\n    }\n\n\ndef caminho_saida(doc):\n    pasta = os.path.dirname(doc.PathName) if doc.PathName else os.path.expanduser(\"~\")\n    base = os.path.splitext(os.path.basename(doc.PathName or doc.Title))[0]\n    return os.path.join(pasta, \"inventario_\" + base.replace(\" \", \"_\") + \".json\")\n\n\ndef salvar(dados, caminho):\n    texto = json.dumps(dados, indent=2, ensure_ascii=False, sort_keys=False)\n    with open(caminho, \"wb\") as fh:\n        fh.write(texto.encode(\"utf-8\"))\n    return caminho\n\n\ndef resumo(dados):\n    loc = dados[\"localizacao\"]\n    linhas = [\n        \"Arquivo: %s (%s)\" % (dados[\"arquivo\"], dados[\"revit\"]),\n        \"Geolocalização: %s  lat %s  lon %s\"\n        % (loc[\"local\"], loc[\"latitude_graus\"], loc[\"longitude_graus\"]),\n        \"Ponto de levantamento (compartilhado): %s\"\n        % loc[\"ponto_levantamento\"][\"compartilhado\"],\n        \"Ângulo para o norte verdadeiro: %s°\"\n        % loc[\"posicao_projeto\"][\"angulo_norte_verdadeiro_graus\"],\n        \"Topografias: %d · CADs: %d · Vínculos Revit: %d · Níveis: %d · Vistas: %d\"\n        % (\n            len(dados[\"topografia\"]),\n            len(dados[\"cads\"]),\n            len(dados[\"vinculos_revit\"]),\n            len(dados[\"niveis\"]),\n            len(dados[\"vistas\"]),\n        ),\n    ]\n    for topo in dados[\"topografia\"]:\n        caixa = topo[\"caixa\"] or {}\n        linhas.append(\n            \"  %s #%s: cotas %s → %s\"\n            % (\n                topo[\"classe\"],\n                topo[\"id\"],\n                (caixa.get(\"compartilhado_min\") or [None] * 3)[2],\n                (caixa.get(\"compartilhado_max\") or [None] * 3)[2],\n            )\n        )\n    for cad in dados[\"cads\"]:\n        linhas.append(\"  CAD %s (%d camadas)\" % (cad[\"nome\"], len(cad[\"camadas\"])))\n    return \"\\n\".join(linhas)\n\n\ndef executar(doc, app_version, DB):\n    dados = inventariar(doc, app_version, DB)\n    destino = salvar(dados, caminho_saida(doc))\n    return resumo(dados) + \"\\n\\nJSON salvo em: \" + destino\n\n\n# ---- entrada Dynamo ----\nimport traceback\n\nimport clr\n\nclr.AddReference(\"RevitAPI\")\nclr.AddReference(\"RevitServices\")\nfrom Autodesk.Revit import DB  # noqa: E402\nfrom RevitServices.Persistence import DocumentManager  # noqa: E402\nfrom RevitServices.Transactions import TransactionManager  # noqa: E402\n\n_doc = DocumentManager.Instance.CurrentDBDocument\n\ntry:\n    OUT = executar(_doc, DocumentManager.Instance.CurrentUIApplication.Application.VersionName, DB)\nexcept Exception:\n    OUT = \"ERRO — copie este texto e mande para análise:\\n\" + traceback.format_exc()\n",
       "Engine": "CPython3",
       "VariableInputPorts": true,
-      "Id": "c99ae728-617d-413a-b771-b39d1678558e",
+      "Id": "9fca5952-81ac-4152-ad98-559d884bacc6",
       "Inputs": [],
       "Outputs": [
         {
-          "Id": "a16704c4-68ae-4ce1-984e-256091c80258",
+          "Id": "12138d09-5646-4402-963d-0eeb3980d7b2",
           "Name": "OUT",
           "Description": "Relatório",
           "UsingDefaultValue": false,
@@ -34,10 +34,10 @@
     {
       "ConcreteType": "CoreNodeModels.Watch, CoreNodeModels",
       "NodeType": "ExtensionNode",
-      "Id": "3c5c3d39-e27d-4d58-a476-44808de43d7d",
+      "Id": "15830a45-4966-4b0c-8622-f2f1cecdd409",
       "Inputs": [
         {
-          "Id": "23f1bd71-f59d-4563-aa08-80f22a49a6a9",
+          "Id": "c8b4a3de-9f4c-4589-a963-1c53a4838d3e",
           "Name": "",
           "Description": "Relatório",
           "UsingDefaultValue": false,
@@ -48,7 +48,7 @@
       ],
       "Outputs": [
         {
-          "Id": "81d84a92-565e-4ef1-8615-a9e8ebdd066b",
+          "Id": "3cccec6a-01d2-489e-be65-9b6b6aaa818c",
           "Name": "",
           "Description": "",
           "UsingDefaultValue": false,
@@ -63,9 +63,9 @@
   ],
   "Connectors": [
     {
-      "Start": "a16704c4-68ae-4ce1-984e-256091c80258",
-      "End": "23f1bd71-f59d-4563-aa08-80f22a49a6a9",
-      "Id": "1f559b0a-75ea-4cec-a74a-3b3d91247e12",
+      "Start": "12138d09-5646-4402-963d-0eeb3980d7b2",
+      "End": "c8b4a3de-9f4c-4589-a963-1c53a4838d3e",
+      "Id": "37dd0564-8347-4d01-9f89-d2d0a18affd8",
       "IsHidden": "False"
     }
   ],
@@ -103,7 +103,7 @@
     },
     "NodeViews": [
       {
-        "Id": "c99ae728-617d-413a-b771-b39d1678558e",
+        "Id": "9fca5952-81ac-4152-ad98-559d884bacc6",
         "Name": "TCC Inventário",
         "IsSetAsInput": false,
         "IsSetAsOutput": false,
@@ -113,7 +113,7 @@
         "Y": 200.0
       },
       {
-        "Id": "3c5c3d39-e27d-4d58-a476-44808de43d7d",
+        "Id": "15830a45-4966-4b0c-8622-f2f1cecdd409",
         "Name": "Relatório",
         "IsSetAsInput": false,
         "IsSetAsOutput": true,
@@ -125,7 +125,7 @@
     ],
     "Annotations": [
       {
-        "Id": "6aae6a7a-32c5-4a56-a10c-c243f04997d5",
+        "Id": "fc51dc4b-0510-4789-bee3-410729514db5",
         "Title": "TCC — EXECUÇÃO MANUAL",
         "Description": "Somente leitura. Clique em Run; o JSON é salvo ao lado do .rvt.",
         "Left": 60.0,

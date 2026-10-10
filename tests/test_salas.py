@@ -61,6 +61,14 @@ class PlanejarParedesTest(unittest.TestCase):
             [sala(1, RET(0, 0, 4, 3)), sala(2, RET(5, 0, 8, 3))], junta_max_m=0.30)
         self.assertFalse([p for p in paredes if p["tipo"] == "interna"])
 
+    def test_mesma_sala_em_dois_pisos_nao_ganha_parede_na_emenda(self):
+        salas = [sala(1, RET(0, 0, 4, 3), nome="Circulação"), sala(2, RET(4, 0, 8, 3), nome="circulacao "),
+                 sala(3, RET(8, 0, 12, 3), nome="Sala 1")]
+        paredes = tcc_salas.planejar_paredes(salas, unir_mesmo_nome=True)
+        internas = [p for p in paredes if p["tipo"] == "interna"]
+        self.assertEqual([p["salas"] for p in internas], [[2, 3]])
+        self.assertEqual(len([p for p in tcc_salas.planejar_paredes(salas) if p["tipo"] == "interna"]), 2)
+
     def test_patio_sem_parede_deixa_a_borda_vizinha_como_externa(self):
         salas = [sala(1, RET(0, 0, 4, 3)), sala(2, RET(4, 0, 8, 3), sem_parede=True)]
         paredes = tcc_salas.planejar_paredes(salas)

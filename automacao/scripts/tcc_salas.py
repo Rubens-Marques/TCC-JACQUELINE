@@ -41,7 +41,8 @@ CONFIG_PADRAO = {
     "parede_interna": "parede externa 15cm_growarq",
     "parede_externa": "parede externa 15cm_growarq",
     "altura_m": 3.0,
-    "ate_nivel_acima": True,
+    "ate_nivel_acima": False,
+    "unir_mesmo_nome": True,
     "externa_face_interna": True,
     "junta_max_m": 0.30,
     "sem_parede": ["patio", "pergolado", "praca", "estacionamento", "externa", "quadra descoberta"],
@@ -159,13 +160,16 @@ class _Uniao(object):
         self.pai[self.raiz(i)] = self.raiz(j)
 
 
-def planejar_paredes(salas, junta_max_m=0.30):
+def planejar_paredes(salas, junta_max_m=0.30, unir_mesmo_nome=False):
     """Paredes de um pavimento a partir das bordas das salas.
 
     `salas`: [{"id", "lacos": [[(x, y), ...]], "sem_parede": bool}] em metros.
     Bordas paralelas a até `junta_max_m` uma da outra, e que se sobrepõem, são a mesma
     parede — cobre os dois jeitos de desenhar: pisos encostados (borda comum) ou pisos
     com o vão da parede entre eles (a parede vai no meio do vão).
+
+    `unir_mesmo_nome`: pisos vizinhos com o mesmo "nome" são pedaços da mesma sala (ex.:
+    circulação desenhada em dois pisos) — a emenda entre eles não vira parede.
 
     Devolve [{"a", "b", "tipo": "interna"|"externa", "salas": [ids], "fora": (nx, ny)|None}].
     `fora` (só nas externas) aponta para o lado de fora da sala.
@@ -187,6 +191,7 @@ def planejar_paredes(salas, junta_max_m=0.30):
 
     paredes = []
     por_id = dict((s["id"], s) for s in salas)
+    nomes = dict((s["id"], _chave(s.get("nome") or str(s["id"]))) for s in salas)
     for grupo in grupos:
         t = grupo[0]["ang"]
         u = (math.cos(t), math.sin(t))
@@ -225,6 +230,8 @@ def planejar_paredes(salas, junta_max_m=0.30):
                 donos = sorted(set(m["sala"] for m in cobrem), key=str)
                 if not donos:
                     continue
+                if unir_mesmo_nome and len(donos) > 1 and len(set(nomes[d] for d in donos)) == 1:
+                    continue  # emenda entre pedaços da mesma sala
                 tipo = "interna" if len(donos) > 1 else "externa"
                 fora = None
                 if tipo == "externa":
@@ -604,9 +611,12 @@ def executar(doc, DB, executar_criacao, config_texto, iniciar=None, concluir=Non
 
     planos = {}
     linhas.append("")
-    linhas.append("Paredes planejadas (junta até %.2f m):" % cfg["junta_max_m"])
+    linhas.append("Paredes planejadas (junta até %.2f m · altura %s%s):" % (
+        cfg["junta_max_m"],
+        "até o nível acima" if cfg["ate_nivel_acima"] else "%.2f m" % cfg["altura_m"],
+        " · pedaços da mesma sala sem parede entre si" if cfg["unir_mesmo_nome"] else ""))
     for (elev, nome_nivel), lista in sorted(por_nivel.items()):
-        paredes = planejar_paredes(lista, cfg["junta_max_m"])
+        paredes = planejar_paredes(lista, cfg["junta_max_m"], cfg["unir_mesmo_nome"])
         planos[(elev, nome_nivel)] = paredes
         tipos = Counter(p["tipo"] for p in paredes)
         compr = defaultdict(float)
