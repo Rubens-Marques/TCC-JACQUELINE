@@ -252,7 +252,7 @@ class SimulacaoTest(unittest.TestCase):
         mat = _elemento(_Generico, 20, Name="Setor Educacional")
         tipo_piso = _elemento(DB.FloorType, 30, Name="Piso sala",
                               GetCompoundStructure=lambda: None)
-        parede = _elemento(DB.WallType, 40, Name="Parede 15", Kind="basic", Width=0.15 / FT)
+        parede = _elemento(DB.WallType, 40, Name="Parede Externa 15cm_GROWARQ", Kind="basic", Width=0.15 / FT)
         doc.elementos.update({10: nivel, 20: mat, 30: tipo_piso, 40: parede})
 
         def piso(eid, nome, ret):
@@ -267,9 +267,11 @@ class SimulacaoTest(unittest.TestCase):
         doc.elementos[2] = piso(2, "Sala 2", RET(4, 0, 8, 3))
         doc.GetElement = lambda i: doc.elementos.get(i)
 
-        relatorio = tcc_salas.executar(doc, DB, False, "")
+        relatorio = tcc_salas.executar(doc, DB, False, '{"salvar_tabela": true}')
         self.assertIn("SIMULAÇÃO", relatorio)
         self.assertIn("Setor Educacional", relatorio)
         self.assertIn("1 internas (3 m) + 4 externas (22 m)", relatorio)
-        self.assertIn("Parede interna: Parede 15 (15 cm)", relatorio)
+        self.assertIn("Parede interna: Parede Externa 15cm_GROWARQ (15 cm)", relatorio)
+        self.assertIn("NÃO ENCONTRADO: laje de concreto 10cm_growarq", relatorio)
+        self.assertNotIn("ambientes", relatorio.split("Com Executar")[-1])
         self.assertTrue(os.path.exists(os.path.join(pasta, "salas_CTJ.csv")))

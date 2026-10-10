@@ -83,13 +83,13 @@ try:
 CONFIG_SALAS = json.dumps(
     {
         "niveis": [],
-        "parede_interna": "",
-        "parede_externa": "",
+        "parede_interna": "parede externa 15cm_growarq",
+        "parede_externa": "parede externa 15cm_growarq",
         "externa_face_interna": True,
         "junta_max_m": 0.30,
         "sem_parede": ["patio", "pergolado", "praca", "estacionamento", "externa", "quadra descoberta"],
-        "criar_ambientes": True,
-        "piso_oficial": "",
+        "criar_ambientes": False,
+        "piso_oficial": "laje de concreto 10cm_growarq",
         "mapa_setores": {},
     },
     ensure_ascii=False,

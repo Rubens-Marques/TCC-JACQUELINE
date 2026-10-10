@@ -38,16 +38,17 @@ MARCA = "TCC-AUTO-SALAS"
 
 CONFIG_PADRAO = {
     "niveis": [],
-    "parede_interna": "",
-    "parede_externa": "",
+    "parede_interna": "parede externa 15cm_growarq",
+    "parede_externa": "parede externa 15cm_growarq",
     "altura_m": 3.0,
     "ate_nivel_acima": True,
     "externa_face_interna": True,
     "junta_max_m": 0.30,
     "sem_parede": ["patio", "pergolado", "praca", "estacionamento", "externa", "quadra descoberta"],
     "criar_paredes": True,
-    "criar_ambientes": True,
-    "piso_oficial": "",
+    "criar_ambientes": False,
+    "salvar_tabela": False,
+    "piso_oficial": "laje de concreto 10cm_growarq",
     "piso_por_setor": {},
     "setor_de": "material",
     "mapa_setores": {},
@@ -402,11 +403,15 @@ def _tipos(doc, DB, classe, filtro=None):
     return dict((_nome(DB, t), t) for t in tipos)
 
 
+def _chave(nome):
+    """Nome de tipo comparado sem caixa, acento e espaços sobrando."""
+    return " ".join(_sem_acento(nome).split())
+
+
 def _escolher(tipos, nome):
-    if nome and nome in tipos:
-        return tipos[nome]
     if nome:
-        return None
+        achados = [t for n, t in tipos.items() if _chave(n) == _chave(nome)]
+        return achados[0] if achados else None
     return tipos[sorted(tipos)[0]] if tipos else None
 
 
@@ -535,7 +540,7 @@ def _criar_pisos(doc, DB, salas, nivel, tipos_piso, cfg):
     criados = 0
     for s in salas:
         nome_tipo = cfg["piso_por_setor"].get(s["setor"]) or cfg["piso_oficial"]
-        tipo = tipos_piso.get(nome_tipo)
+        tipo = _escolher(tipos_piso, nome_tipo) if nome_tipo else None
         if tipo is None:
             continue
         lacos = List[DB.CurveLoop]()
@@ -619,7 +624,7 @@ def executar(doc, DB, executar_criacao, config_texto, iniciar=None, concluir=Non
                                          "NÃO ENCONTRADO: '%s'" % cfg["parede_" + lado]))
     linhas.append("  tipos disponíveis: %s" % ", ".join(sorted(tipos_parede)))
     if cfg["piso_oficial"] or cfg["piso_por_setor"]:
-        faltando = [n for n in [cfg["piso_oficial"]] + list(cfg["piso_por_setor"].values()) if n and n not in tipos_piso]
+        faltando = [n for n in [cfg["piso_oficial"]] + list(cfg["piso_por_setor"].values()) if n and _escolher(tipos_piso, n) is None]
         linhas.append("Piso oficial: %s%s" % (cfg["piso_oficial"] or "(só por setor)",
                                               " · NÃO ENCONTRADO: %s" % ", ".join(faltando) if faltando else ""))
         linhas.append("  tipos de piso disponíveis: %s" % ", ".join(sorted(tipos_piso)))
@@ -632,11 +637,12 @@ def executar(doc, DB, executar_criacao, config_texto, iniciar=None, concluir=Non
         linhas.append("Conferir antes de executar:")
         linhas += ["  " + a for a in avisos[:25]]
 
-    try:
-        linhas.append("")
-        linhas.append("Tabela de salas salva em: %s" % _salvar_csv(doc, salas))
-    except Exception as erro:
-        linhas.append("Tabela de salas não foi salva: %s" % erro)
+    if cfg["salvar_tabela"]:
+        try:
+            linhas.append("")
+            linhas.append("Tabela de salas salva em: %s" % _salvar_csv(doc, salas))
+        except Exception as erro:
+            linhas.append("Tabela de salas não foi salva: %s" % erro)
 
     existentes = _marcados(doc, DB)
     linhas.append("Elementos criados antes por este script: %d (serão apagados e recriados)" % len(existentes))
