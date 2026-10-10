@@ -12,6 +12,7 @@ SCRIPTS = ROOT / "automacao" / "scripts"
 GRAFOS = {
     "TCC_Inventario.dyn": ["tcc_inventario.py"],
     "TCC_Lotes.dyn": ["tcc_geometria.py", "tcc_lotes.py"],
+    "TCC_Salas.dyn": ["tcc_geometria.py", "tcc_salas.py"],
 }
 
 
@@ -63,16 +64,31 @@ class DynTest(unittest.TestCase):
             json.loads(entradas["StringInputNode"]["InputValue"])["limite"], 10
         )
 
+    def test_salas_nasce_em_simulacao(self):
+        grafo = carregar("TCC_Salas.dyn")
+        booleano = [n for n in grafo["Nodes"] if n["NodeType"] == "BooleanInputNode"]
+        self.assertIs(booleano[0]["InputValue"], False)
+
     def test_entradas_ligadas_na_ordem_do_script(self):
-        grafo = carregar("TCC_Lotes.dyn")
+        for nome in ("TCC_Lotes.dyn", "TCC_Salas.dyn"):
+            with self.subTest(grafo=nome):
+                self._conferir_ligacoes(carregar(nome))
+
+    def _conferir_ligacoes(self, grafo):
         py = no_python(grafo)
-        tipo_por_id = {n["Id"]: n["NodeType"] for n in grafo["Nodes"]}
+        # Dynamo liga porta com porta (Id de porta, não de nó); senão abre tudo desligado.
+        dono_saida = {p["Id"]: n["NodeType"] for n in grafo["Nodes"] for p in n["Outputs"]}
+        entradas_py = [p["Id"] for p in py["Inputs"]]
         ligacoes = {
-            c["EndIndex"]: tipo_por_id[c["Start"]]
+            entradas_py.index(c["End"]): dono_saida[c["Start"]]
             for c in grafo["Connectors"]
-            if c["End"] == py["Id"]
+            if c["End"] in entradas_py
         }
         self.assertEqual(ligacoes, {0: "BooleanInputNode", 1: "StringInputNode"})
+        watch = [n for n in grafo["Nodes"] if n["NodeType"] == "ExtensionNode"][0]
+        self.assertTrue(any(
+            c["Start"] == py["Outputs"][0]["Id"] and c["End"] == watch["Inputs"][0]["Id"]
+            for c in grafo["Connectors"]))
 
 
 if __name__ == "__main__":

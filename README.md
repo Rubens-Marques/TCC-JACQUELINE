@@ -39,7 +39,18 @@ tests/           Checagens rodadas no Mac antes de levar ao Revit
    em `dados/processados/`, nas mesmas coordenadas do terreno.
 4. **Mapas no Revit** — script cria as vistas, regiões preenchidas, estilos de
    linha, legendas e a prancha de cada mapa (ver `docs/mapas.md`).
-5. **Setorização e paredes** — áreas do projeto → pisos e paredes via Dynamo/pyRevit.
+5. **Salas → paredes** — `automacao/dynamo/TCC_Salas.dyn`, no modelo do CTJ. Cada sala é um
+   piso com o nome no *Comentários* e o setor no material. O script levanta as paredes nas
+   bordas (borda entre duas salas = 1 parede interna; borda solta = externa, com a face
+   interna na borda do piso) e cria o piso oficial de cada sala. Padrão: parede
+   `parede externa 15cm_growarq`, piso `laje de concreto 10cm_growarq`. Opcionais
+   (desligados): ambientes (`"criar_ambientes": true`) e tabela `salas_<arquivo>.csv`
+   (`"salvar_tabela": true`).
+   - `Executar = False` → simulação: setores e áreas, paredes planejadas, tipos disponíveis.
+   - Testar num pavimento: `"niveis": ["Térreo"]`, `Executar = True`, conferir em 3D.
+   - Salas abertas (pátio, pergolado…) não ganham parede: lista `"sem_parede"`.
+   - Reexecutar apaga tudo o que tem a marca `TCC-AUTO-SALAS` — inclusive portas nessas
+     paredes. Rodar **antes** de colocar esquadrias.
 
 O Revit roda no Windows (Revit 2026). Este Mac só prepara dados e scripts.
 

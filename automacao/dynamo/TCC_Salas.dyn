@@ -1,0 +1,241 @@
+{
+  "Uuid": "6eee701e-8aa0-4e3d-bb3b-e93a6fa132c9",
+  "IsCustomNode": false,
+  "Description": "Pisos-sala (nome no Comentários, setor no material) → paredes, ambientes e tabela de áreas.",
+  "Name": "TCC Salas",
+  "ElementResolver": {
+    "ResolutionMap": {}
+  },
+  "Inputs": [],
+  "Outputs": [],
+  "Nodes": [
+    {
+      "ConcreteType": "CoreNodeModels.Input.BoolSelector, CoreNodeModels",
+      "NodeType": "BooleanInputNode",
+      "InputValue": false,
+      "Id": "e7e946c6-c093-41fd-a028-7df1a4103053",
+      "Inputs": [],
+      "Outputs": [
+        {
+          "Id": "2c32aa7c-613b-4cce-9254-8967a97faa8a",
+          "Name": "",
+          "Description": "bool",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Replication": "Disabled",
+      "Description": "Executar (False = simulação)"
+    },
+    {
+      "ConcreteType": "CoreNodeModels.Input.StringInput, CoreNodeModels",
+      "NodeType": "StringInputNode",
+      "InputValue": "{\"niveis\": [], \"parede_interna\": \"parede externa 15cm_growarq\", \"parede_externa\": \"parede externa 15cm_growarq\", \"altura_m\": 3.0, \"ate_nivel_acima\": false, \"unir_mesmo_nome\": true, \"externa_face_interna\": true, \"junta_max_m\": 0.3, \"sem_parede\": [\"patio\", \"pergolado\", \"praca\", \"estacionamento\", \"externa\", \"quadra descoberta\"], \"criar_ambientes\": false, \"piso_oficial\": \"laje de concreto 10cm_growarq\", \"mapa_setores\": {}}",
+      "Id": "545ed961-265d-4947-abc4-a773421d3348",
+      "Inputs": [],
+      "Outputs": [
+        {
+          "Id": "725bfa68-60a3-4629-9668-9a094d0283b1",
+          "Name": "",
+          "Description": "string",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Replication": "Disabled",
+      "Description": "Configuração (JSON)"
+    },
+    {
+      "ConcreteType": "PythonNodeModels.PythonNode, PythonNodeModels",
+      "NodeType": "PythonScriptNode",
+      "Code": "# -*- coding: utf-8 -*-\n\"\"\"Geometria 2D pura (sem Revit): fecha as linhas soltas do DWG em polígonos de lote.\n\nDWG de prefeitura raramente traz cada lote como polilinha fechada: o contorno da quadra\né uma linha só e as divisas entre lotes encostam nele (junção em T), às vezes passando um\npouco ou parando um pouco antes. Por isso tratamos o desenho como um grafo planar:\nquebramos as linhas nos cruzamentos, soldamos pontas próximas, descartamos traços soltos\ne percorremos as faces fechadas — cada face mínima é um lote.\n\nCompatível com Python 2.7 (IronPython/pyRevit) e 3 (Dynamo CPython3).\n\"\"\"\n\nimport math\nfrom collections import defaultdict\n\n\ndef area(poligono):\n    \"\"\"Área com sinal (fórmula do laço): positiva = anti-horário.\"\"\"\n    soma = 0.0\n    n = len(poligono)\n    for i in range(n):\n        x1, y1 = poligono[i]\n        x2, y2 = poligono[(i + 1) % n]\n        soma += x1 * y2 - x2 * y1\n    return soma / 2.0\n\n\ndef centroide(poligono):\n    a = area(poligono)\n    if abs(a) < 1e-12:\n        xs = [p[0] for p in poligono]\n        ys = [p[1] for p in poligono]\n        return (sum(xs) / len(xs), sum(ys) / len(ys))\n    cx = cy = 0.0\n    n = len(poligono)\n    for i in range(n):\n        x1, y1 = poligono[i]\n        x2, y2 = poligono[(i + 1) % n]\n        f = x1 * y2 - x2 * y1\n        cx += (x1 + x2) * f\n        cy += (y1 + y2) * f\n    return (cx / (6.0 * a), cy / (6.0 * a))\n\n\ndef ponto_no_poligono(ponto, poligono):\n    x, y = ponto\n    dentro = False\n    n = len(poligono)\n    for i in range(n):\n        x1, y1 = poligono[i]\n        x2, y2 = poligono[(i + 1) % n]\n        if (y1 > y) != (y2 > y):\n            x_corte = x1 + (y - y1) * (x2 - x1) / (y2 - y1)\n            if x < x_corte:\n                dentro = not dentro\n    return dentro\n\n\ndef _dist(a, b):\n    return math.hypot(a[0] - b[0], a[1] - b[1])\n\n\ndef simplificar(poligono, tolerancia=1e-6):\n    \"\"\"Remove pontos repetidos e vértices colineares (as quebras em T deixam vários).\"\"\"\n    pts = list(poligono)\n    mudou = True\n    while mudou and len(pts) > 3:\n        mudou = False\n        for i in range(len(pts)):\n            a, b, c = pts[i - 1], pts[i], pts[(i + 1) % len(pts)]\n            base = _dist(a, c)\n            if _dist(a, b) <= tolerancia or base <= tolerancia:\n                colinear = True\n            else:\n                cruz = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])\n                colinear = abs(cruz) / base <= tolerancia\n            if colinear:\n                del pts[i]\n                mudou = True\n                break\n    return pts\n\n\nclass _Soldador(object):\n    \"\"\"Une pontos a menos de `tolerancia` num único nó (hash espacial).\"\"\"\n\n    def __init__(self, tolerancia):\n        self.tol = tolerancia\n        self.celulas = defaultdict(list)\n        self.pontos = []\n\n    def no(self, p):\n        cx, cy = int(math.floor(p[0] / self.tol)), int(math.floor(p[1] / self.tol))\n        for dx in (-1, 0, 1):\n            for dy in (-1, 0, 1):\n                for idx in self.celulas[(cx + dx, cy + dy)]:\n                    if _dist(self.pontos[idx], p) <= self.tol:\n                        return idx\n        self.pontos.append((float(p[0]), float(p[1])))\n        self.celulas[(cx, cy)].append(len(self.pontos) - 1)\n        return len(self.pontos) - 1\n\n\ndef _pares_proximos(segmentos, tolerancia):\n    \"\"\"Pares de segmentos cujas caixas se tocam (grade espacial evita o O(n²) completo).\"\"\"\n    if not segmentos:\n        return set()\n    comprimentos = sorted(_dist(a, b) for a, b in segmentos)\n    celula = max(comprimentos[len(comprimentos) // 2], tolerancia * 10)\n    grade = defaultdict(list)\n    for i, (a, b) in enumerate(segmentos):\n        x0 = int(math.floor((min(a[0], b[0]) - tolerancia) / celula))\n        x1 = int(math.floor((max(a[0], b[0]) + tolerancia) / celula))\n        y0 = int(math.floor((min(a[1], b[1]) - tolerancia) / celula))\n        y1 = int(math.floor((max(a[1], b[1]) + tolerancia) / celula))\n        for gx in range(x0, x1 + 1):\n            for gy in range(y0, y1 + 1):\n                grade[(gx, gy)].append(i)\n    pares = set()\n    for indices in grade.values():\n        for m in range(len(indices)):\n            for n in range(m + 1, len(indices)):\n                pares.add((indices[m], indices[n]))\n    return pares\n\n\ndef _parametro_projecao(p, a, b):\n    dx, dy = b[0] - a[0], b[1] - a[1]\n    comp2 = dx * dx + dy * dy\n    t = ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / comp2\n    t = min(1.0, max(0.0, t))\n    return t, _dist(p, (a[0] + t * dx, a[1] + t * dy))\n\n\ndef _cortes(segmentos, tolerancia):\n    \"\"\"Para cada segmento, parâmetros t ∈ [0, 1] onde ele precisa ser quebrado.\"\"\"\n    cortes = [set([0.0, 1.0]) for _ in segmentos]\n    for i, j in _pares_proximos(segmentos, tolerancia):\n        (p, p2), (q, q2) = segmentos[i], segmentos[j]\n        # Ponta de um encostando no outro (junção em T, inclusive com folga ≤ tolerância).\n        for ponta, alvo, k in (\n            (p, segmentos[j], j),\n            (p2, segmentos[j], j),\n            (q, segmentos[i], i),\n            (q2, segmentos[i], i),\n        ):\n            t, d = _parametro_projecao(ponta, alvo[0], alvo[1])\n            if d <= tolerancia:\n                cortes[k].add(t)\n        # Cruzamento próprio.\n        r = (p2[0] - p[0], p2[1] - p[1])\n        s = (q2[0] - q[0], q2[1] - q[1])\n        denom = r[0] * s[1] - r[1] * s[0]\n        if abs(denom) < 1e-12:\n            continue\n        qp = (q[0] - p[0], q[1] - p[1])\n        t = (qp[0] * s[1] - qp[1] * s[0]) / denom\n        u = (qp[0] * r[1] - qp[1] * r[0]) / denom\n        if 0.0 < t < 1.0 and 0.0 < u < 1.0:\n            cortes[i].add(t)\n            cortes[j].add(u)\n    return cortes\n\n\ndef _arestas(segmentos, tolerancia):\n    soldador = _Soldador(tolerancia)\n    arestas = set()\n    for (a, b), ts in zip(segmentos, _cortes(segmentos, tolerancia)):\n        nos = []\n        for t in sorted(ts):\n            idx = soldador.no((a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])))\n            if not nos or nos[-1] != idx:\n                nos.append(idx)\n        for u, v in zip(nos, nos[1:]):\n            if u != v:\n                arestas.add((min(u, v), max(u, v)))\n    return soldador.pontos, arestas\n\n\ndef _podar_pontas(arestas):\n    \"\"\"Remove traços que não fecham nada (nós de grau 1, repetidamente).\"\"\"\n    vizinhos = defaultdict(set)\n    for u, v in arestas:\n        vizinhos[u].add(v)\n        vizinhos[v].add(u)\n    pilha = [n for n, viz in vizinhos.items() if len(viz) == 1]\n    while pilha:\n        n = pilha.pop()\n        for m in list(vizinhos[n]):\n            vizinhos[m].discard(n)\n            if len(vizinhos[m]) == 1:\n                pilha.append(m)\n        vizinhos[n] = set()\n    return dict((n, viz) for n, viz in vizinhos.items() if viz)\n\n\ndef poligonos_de_segmentos(segmentos, tolerancia=0.01, area_minima=None):\n    \"\"\"Faces fechadas mínimas do desenho, como polígonos anti-horários simplificados.\n\n    `segmentos`: lista de ((x1, y1), (x2, y2)) em metros. Segmentos menores que a\n    tolerância são ignorados.\n    \"\"\"\n    segmentos = [(a, b) for a, b in segmentos if _dist(a, b) > tolerancia]\n    pontos, arestas = _arestas(segmentos, tolerancia)\n    vizinhos = _podar_pontas(arestas)\n\n    angulo = lambda u, v: math.atan2(\n        pontos[v][1] - pontos[u][1], pontos[v][0] - pontos[u][0]\n    )  # noqa: E731\n    ordenados = dict(\n        (u, sorted(viz, key=lambda v, u=u: angulo(u, v))) for u, viz in vizinhos.items()\n    )\n\n    if area_minima is None:\n        area_minima = tolerancia * tolerancia * 100\n    visitadas = set()\n    poligonos = []\n    for u, viz in ordenados.items():\n        for v in viz:\n            if (u, v) in visitadas:\n                continue\n            face = []\n            a, b = u, v\n            while (a, b) not in visitadas:\n                visitadas.add((a, b))\n                face.append(pontos[a])\n                ao_redor = ordenados[b]\n                # Próxima aresta: a imediatamente horária à volta (b→a) — mantém a face à esquerda.\n                a, b = b, ao_redor[ao_redor.index(a) - 1]\n            if area(face) > area_minima:\n                poligonos.append(simplificar(face, tolerancia))\n    return poligonos\n\n\n# -*- coding: utf-8 -*-\n\"\"\"Salas desenhadas como pisos → paredes, ambientes (Rooms), pisos oficiais e tabela de áreas.\n\nComo a Jacqueline modela: cada sala é um **piso** no seu pavimento, com o nome da sala no\nparâmetro Comentários e o setor no material do piso. O script lê esses pisos e:\n\n1. levanta as **paredes** nas bordas das salas, sem duplicar a parede entre duas salas\n   vizinhas (borda compartilhada = 1 parede interna; borda solta = parede externa);\n2. cria um **ambiente** (Room) em cada sala, com Nome = comentário e Departamento = setor\n   — é o que alimenta planta colorida por setor, etiquetas e tabela de áreas;\n3. opcionalmente cria o **piso oficial** de cada sala com o tipo escolhido;\n4. salva `salas_<arquivo>.csv` (pavimento; sala; setor; área) ao lado do .rvt — base da\n   tabela do programa de necessidades.\n\nSegurança:\n- `executar=False` (padrão) só simula e relata; nada muda no modelo.\n- Tudo o que o script cria leva o comentário MARCA. Reexecutar apaga só isso e recria\n  (portas/janelas hospedadas nessas paredes somem junto — rode antes de pôr esquadrias).\n- Os pisos-sala originais não são alterados.\n\nCompatível com Python 2.7 (IronPython/pyRevit) e 3 (Dynamo CPython3).\n\"\"\"\n\nimport csv\nimport io\nimport json\nimport math\nimport os\nfrom collections import Counter, defaultdict\n\ntry:\n    from tcc_geometria import area, centroide, ponto_no_poligono\nexcept ImportError:  # no Dynamo o tcc_geometria vem embutido no mesmo nó\n    pass\n\nFT_TO_M = 0.3048\nMARCA = \"TCC-AUTO-SALAS\"\n\nCONFIG_PADRAO = {\n    \"niveis\": [],\n    \"parede_interna\": \"parede externa 15cm_growarq\",\n    \"parede_externa\": \"parede externa 15cm_growarq\",\n    \"altura_m\": 3.0,\n    \"ate_nivel_acima\": False,\n    \"unir_mesmo_nome\": True,\n    \"externa_face_interna\": True,\n    \"junta_max_m\": 0.30,\n    \"sem_parede\": [\"patio\", \"pergolado\", \"praca\", \"estacionamento\", \"externa\", \"quadra descoberta\"],\n    \"criar_paredes\": True,\n    \"criar_ambientes\": False,\n    \"salvar_tabela\": False,\n    \"piso_oficial\": \"laje de concreto 10cm_growarq\",\n    \"piso_por_setor\": {},\n    \"setor_de\": \"material\",\n    \"mapa_setores\": {},\n}\n\n# Trechos de parede menores que isso são sobra de arredondamento, não parede.\nCOMPRIMENTO_MIN_M = 0.05\n# Bordas com direções até este ângulo são tratadas como paralelas (desenho à mão).\nANGULO_TOL_RAD = math.radians(0.5)\nEPS_M = 0.01\n\n\n# --- regras puras (testáveis sem Revit) -----------------------------------------------\n\n\ndef ler_config(texto):\n    cfg = dict(CONFIG_PADRAO)\n    if texto and texto.strip():\n        try:\n            cfg.update(json.loads(texto))\n        except ValueError as erro:\n            raise ValueError(\n                \"Configuração não é um JSON válido (use aspas duplas): %s\" % erro\n            )\n    return cfg\n\n\ndef _sem_acento(texto):\n    trocas = {\"á\": \"a\", \"à\": \"a\", \"â\": \"a\", \"ã\": \"a\", \"é\": \"e\", \"ê\": \"e\", \"í\": \"i\",\n              \"ó\": \"o\", \"ô\": \"o\", \"õ\": \"o\", \"ú\": \"u\", \"ç\": \"c\"}\n    return \"\".join(trocas.get(c, c) for c in (texto or \"\").strip().lower())\n\n\ndef sem_parede(nome, padroes):\n    \"\"\"Sala aberta (pátio, pergolado…) não ganha parede: o trecho vira borda de quem encosta.\"\"\"\n    alvo = _sem_acento(nome)\n    return any(_sem_acento(p) and _sem_acento(p) in alvo for p in padroes)\n\n\ndef nome_setor(material, tipo, cfg):\n    bruto = tipo if cfg.get(\"setor_de\") == \"tipo\" else material\n    bruto = (bruto or \"\").strip()\n    return cfg.get(\"mapa_setores\", {}).get(bruto, bruto) or \"(sem setor)\"\n\n\ndef area_salas(lacos):\n    \"\"\"Área de uma sala com furos (shafts): maior contorno menos os demais.\"\"\"\n    areas = sorted((abs(area(l)) for l in lacos if len(l) >= 3), reverse=True)\n    if not areas:\n        return 0.0\n    return areas[0] - sum(areas[1:])\n\n\ndef dentro_da_sala(ponto, lacos):\n    return sum(1 for l in lacos if ponto_no_poligono(ponto, l)) % 2 == 1\n\n\ndef ponto_interno(lacos):\n    \"\"\"Ponto garantidamente dentro da sala (o centroide falha em L e em salas com furo).\"\"\"\n    externo = max(lacos, key=lambda l: abs(area(l)))\n    c = centroide(externo)\n    if dentro_da_sala(c, lacos):\n        return c\n    xs = [p[0] for p in externo]\n    ys = [p[1] for p in externo]\n    # Varre linhas horizontais e pega o meio do trecho interno mais largo.\n    melhor, largura = None, -1.0\n    for k in range(1, 40):\n        y = min(ys) + (max(ys) - min(ys)) * k / 40.0\n        cortes = []\n        for l in lacos:\n            for i in range(len(l)):\n                (x1, y1), (x2, y2) = l[i], l[(i + 1) % len(l)]\n                if (y1 > y) != (y2 > y):\n                    cortes.append(x1 + (y - y1) * (x2 - x1) / (y2 - y1))\n        cortes.sort()\n        for a, b in zip(cortes[::2], cortes[1::2]):\n            if b - a > largura:\n                melhor, largura = ((a + b) / 2.0, y), b - a\n    return melhor or c\n\n\ndef _bordas(sala):\n    for laco in sala[\"lacos\"]:\n        n = len(laco)\n        for i in range(n):\n            a, b = laco[i], laco[(i + 1) % n]\n            if math.hypot(b[0] - a[0], b[1] - a[1]) > EPS_M:\n                yield a, b\n\n\ndef _angulo(a, b):\n    t = math.atan2(b[1] - a[1], b[0] - a[0]) % math.pi\n    return 0.0 if t > math.pi - ANGULO_TOL_RAD else t\n\n\nclass _Uniao(object):\n    def __init__(self, n):\n        self.pai = list(range(n))\n\n    def raiz(self, i):\n        while self.pai[i] != i:\n            self.pai[i] = self.pai[self.pai[i]]\n            i = self.pai[i]\n        return i\n\n    def unir(self, i, j):\n        self.pai[self.raiz(i)] = self.raiz(j)\n\n\ndef planejar_paredes(salas, junta_max_m=0.30, unir_mesmo_nome=False):\n    \"\"\"Paredes de um pavimento a partir das bordas das salas.\n\n    `salas`: [{\"id\", \"lacos\": [[(x, y), ...]], \"sem_parede\": bool}] em metros.\n    Bordas paralelas a até `junta_max_m` uma da outra, e que se sobrepõem, são a mesma\n    parede — cobre os dois jeitos de desenhar: pisos encostados (borda comum) ou pisos\n    com o vão da parede entre eles (a parede vai no meio do vão).\n\n    `unir_mesmo_nome`: pisos vizinhos com o mesmo \"nome\" são pedaços da mesma sala (ex.:\n    circulação desenhada em dois pisos) — a emenda entre eles não vira parede.\n\n    Devolve [{\"a\", \"b\", \"tipo\": \"interna\"|\"externa\", \"salas\": [ids], \"fora\": (nx, ny)|None}].\n    `fora` (só nas externas) aponta para o lado de fora da sala.\n    \"\"\"\n    bordas = []\n    for sala in salas:\n        if sala.get(\"sem_parede\"):\n            continue\n        for a, b in _bordas(sala):\n            bordas.append({\"a\": a, \"b\": b, \"sala\": sala[\"id\"], \"ang\": _angulo(a, b)})\n\n    # 1) grupos de direção\n    grupos = []\n    for borda in sorted(bordas, key=lambda x: x[\"ang\"]):\n        if grupos and abs(borda[\"ang\"] - grupos[-1][0][\"ang\"]) <= ANGULO_TOL_RAD:\n            grupos[-1].append(borda)\n        else:\n            grupos.append([borda])\n\n    paredes = []\n    por_id = dict((s[\"id\"], s) for s in salas)\n    nomes = dict((s[\"id\"], _chave(s.get(\"nome\") or str(s[\"id\"]))) for s in salas)\n    for grupo in grupos:\n        t = grupo[0][\"ang\"]\n        u = (math.cos(t), math.sin(t))\n        n = (-u[1], u[0])\n        for borda in grupo:\n            a, b = borda[\"a\"], borda[\"b\"]\n            borda[\"d\"] = (a[0] * n[0] + a[1] * n[1] + b[0] * n[0] + b[1] * n[1]) / 2.0\n            s0, s1 = a[0] * u[0] + a[1] * u[1], b[0] * u[0] + b[1] * u[1]\n            borda[\"s\"] = (min(s0, s1), max(s0, s1))\n\n        # 2) mesma linha de parede = paralelas próximas que se sobrepõem ou se tocam\n        uniao = _Uniao(len(grupo))\n        ordem = sorted(range(len(grupo)), key=lambda i: grupo[i][\"d\"])\n        for p, i in enumerate(ordem):\n            for j in ordem[p + 1:]:\n                if grupo[j][\"d\"] - grupo[i][\"d\"] > junta_max_m:\n                    break\n                (i0, i1), (j0, j1) = grupo[i][\"s\"], grupo[j][\"s\"]\n                if min(i1, j1) - max(i0, j0) >= -EPS_M:\n                    uniao.unir(i, j)\n        linhas = defaultdict(list)\n        for i in range(len(grupo)):\n            linhas[uniao.raiz(i)].append(grupo[i])\n\n        # 3) em cada linha: quebra nos extremos e conta quantas salas cobrem cada trecho\n        for membros in linhas.values():\n            peso = sum(m[\"s\"][1] - m[\"s\"][0] for m in membros)\n            d = sum(m[\"d\"] * (m[\"s\"][1] - m[\"s\"][0]) for m in membros) / peso\n            marcos = sorted(set(round(v, 6) for m in membros for v in m[\"s\"]))\n            trechos = []\n            for p, q in zip(marcos, marcos[1:]):\n                if q - p <= EPS_M:\n                    continue\n                meio = (p + q) / 2.0\n                cobrem = [m for m in membros if m[\"s\"][0] - EPS_M <= meio <= m[\"s\"][1] + EPS_M]\n                donos = sorted(set(m[\"sala\"] for m in cobrem), key=str)\n                if not donos:\n                    continue\n                if unir_mesmo_nome and len(donos) > 1 and len(set(nomes[d] for d in donos)) == 1:\n                    continue  # emenda entre pedaços da mesma sala\n                tipo = \"interna\" if len(donos) > 1 else \"externa\"\n                fora = None\n                if tipo == \"externa\":\n                    # testa a 5 cm da própria borda da sala, dos dois lados\n                    m = cobrem[0]\n                    x, y = u[0] * meio + n[0] * (m[\"d\"] + 0.05), u[1] * meio + n[1] * (m[\"d\"] + 0.05)\n                    fora = (-n[0], -n[1]) if dentro_da_sala((x, y), por_id[m[\"sala\"]][\"lacos\"]) else n\n                # Une trechos seguidos do mesmo tipo; externa só se a sala está do mesmo lado.\n                if trechos and trechos[-1][\"tipo\"] == tipo and abs(trechos[-1][\"q\"] - p) <= EPS_M \\\n                        and trechos[-1][\"fora\"] == fora:\n                    trechos[-1][\"q\"] = q\n                    trechos[-1][\"salas\"] = sorted(set(trechos[-1][\"salas\"]) | set(donos), key=str)\n                else:\n                    trechos.append({\"p\": p, \"q\": q, \"tipo\": tipo, \"salas\": donos, \"fora\": fora})\n\n            for tr in trechos:\n                if tr[\"q\"] - tr[\"p\"] < COMPRIMENTO_MIN_M:\n                    continue\n                a = (u[0] * tr[\"p\"] + n[0] * d, u[1] * tr[\"p\"] + n[1] * d)\n                b = (u[0] * tr[\"q\"] + n[0] * d, u[1] * tr[\"q\"] + n[1] * d)\n                paredes.append({\"a\": a, \"b\": b, \"tipo\": tr[\"tipo\"], \"salas\": tr[\"salas\"], \"fora\": tr[\"fora\"]})\n    return paredes\n\n\ndef deslocar_externa(parede, largura_m):\n    \"\"\"Empurra a parede externa para fora em meia espessura: a face interna fica na borda\n    do piso, e a sala mantém a área desenhada.\"\"\"\n    nx, ny = parede[\"fora\"]\n    k = largura_m / 2.0\n    return (\n        (parede[\"a\"][0] + nx * k, parede[\"a\"][1] + ny * k),\n        (parede[\"b\"][0] + nx * k, parede[\"b\"][1] + ny * k),\n    )\n\n\ndef resumo_setores(salas):\n    \"\"\"[(setor, n_salas, área m²)] em ordem de área — o programa de necessidades.\"\"\"\n    soma, conta = defaultdict(float), Counter()\n    for s in salas:\n        soma[s[\"setor\"]] += s[\"area\"]\n        conta[s[\"setor\"]] += 1\n    return sorted(((k, conta[k], soma[k]) for k in soma), key=lambda x: -x[2])\n\n\ndef problemas_das_salas(salas):\n    \"\"\"Avisos de desenho que viram parede errada se não forem corrigidos antes.\"\"\"\n    avisos = []\n    nomes = Counter((s[\"nivel\"], s[\"nome\"].strip().lower()) for s in salas if s[\"nome\"])\n    for (nivel, nome), n in sorted(nomes.items()):\n        if n > 1:\n            avisos.append(\"%s: '%s' aparece em %d pisos (ok se for proposital, ex.: 2 salas de aula iguais)\" % (nivel, nome, n))\n    for s in salas:\n        if s[\"area\"] < 1.0:\n            avisos.append(\"%s: sala '%s' com %.2f m² — piso duplicado ou desenho errado?\" % (s[\"nivel\"], s[\"nome\"], s[\"area\"]))\n    return avisos\n\n\ndef tabela_csv(salas):\n    saida = io.StringIO()\n    escritor = csv.writer(saida, delimiter=\";\", lineterminator=\"\\n\")\n    escritor.writerow([\"pavimento\", \"sala\", \"setor\", \"area_m2\", \"piso_id\"])\n    for s in sorted(salas, key=lambda s: (s[\"elev\"], s[\"setor\"], s[\"nome\"])):\n        escritor.writerow([s[\"nivel\"], s[\"nome\"], s[\"setor\"], (\"%.2f\" % s[\"area\"]).replace(\".\", \",\"), s[\"id\"]])\n    return saida.getvalue()\n\n\n# --- leitura do Revit -----------------------------------------------------------------\n\n\ndef _int_id(element_id):\n    # Revit 2026 removeu ElementId.IntegerValue; .Value existe desde o 2024.\n    return int(\n        element_id.Value if hasattr(element_id, \"Value\") else element_id.IntegerValue\n    )\n\n\ndef _nome(DB, elemento):\n    \"\"\"Nome de tipo/elemento: no CPython3 do Dynamo `.Name` às vezes falha em ElementType.\"\"\"\n    if elemento is None:\n        return \"\"\n    for ler in (\n        lambda: elemento.Name,\n        lambda: DB.Element.Name.__get__(elemento),\n        lambda: elemento.get_Parameter(DB.BuiltInParameter.ALL_MODEL_TYPE_NAME).AsString(),\n    ):\n        try:\n            valor = ler()\n            if valor:\n                return valor\n        except Exception:\n            pass\n    return \"\"\n\n\ndef _comentario(DB, elemento):\n    p = elemento.get_Parameter(DB.BuiltInParameter.ALL_MODEL_INSTANCE_COMMENTS)\n    return (p.AsString() or \"\").strip() if p is not None else \"\"\n\n\ndef _marcar(DB, elemento, texto=MARCA):\n    p = elemento.get_Parameter(DB.BuiltInParameter.ALL_MODEL_INSTANCE_COMMENTS)\n    if p is not None and not p.IsReadOnly:\n        p.Set(texto)\n\n\ndef _material_do_piso(doc, DB, piso):\n    \"\"\"Material pintado (ferramenta Pintar) tem prioridade; senão, 1ª camada do tipo.\"\"\"\n    try:\n        pintados = list(piso.GetMaterialIds(True))\n    except Exception:\n        pintados = []\n    if pintados:\n        return _nome(DB, doc.GetElement(pintados[0]))\n    tipo = doc.GetElement(piso.GetTypeId())\n    estrutura = tipo.GetCompoundStructure() if tipo is not None else None\n    if estrutura is not None:\n        for camada in estrutura.GetLayers():\n            if _int_id(camada.MaterialId) > 0:\n                return _nome(DB, doc.GetElement(camada.MaterialId))\n    return \"\"\n\n\ndef _lacos_do_piso(doc, DB, piso):\n    sketch = doc.GetElement(piso.SketchId) if hasattr(piso, \"SketchId\") else None\n    lacos, curvas = [], 0\n    if sketch is None:\n        return lacos, curvas\n    for arr in sketch.Profile:\n        pontos = []\n        for curva in arr:\n            if not isinstance(curva, DB.Line):\n                curvas += 1\n            pts = list(curva.Tessellate())\n            pontos.extend((p.X * FT_TO_M, p.Y * FT_TO_M) for p in pts[:-1])\n        if len(pontos) >= 3:\n            lacos.append(pontos)\n    return lacos, curvas\n\n\ndef ler_salas(doc, DB, cfg):\n    \"\"\"Pisos com comentário = salas. Devolve (salas, pisos_sem_nome, bordas_curvas).\"\"\"\n    salas, sem_nome, curvas = [], 0, 0\n    filtro = set(_sem_acento(n) for n in cfg[\"niveis\"])\n    for piso in DB.FilteredElementCollector(doc).OfClass(DB.Floor).WhereElementIsNotElementType():\n        nome = _comentario(DB, piso)\n        if nome == MARCA:\n            continue  # piso oficial criado por este script\n        nivel = doc.GetElement(piso.LevelId)\n        if nivel is None or (filtro and _sem_acento(nivel.Name) not in filtro):\n            continue\n        if not nome:\n            sem_nome += 1\n            continue\n        lacos, c = _lacos_do_piso(doc, DB, piso)\n        if not lacos:\n            continue\n        curvas += c\n        tipo = _nome(DB, doc.GetElement(piso.GetTypeId()))\n        salas.append({\n            \"id\": _int_id(piso.Id),\n            \"nome\": nome,\n            \"setor\": nome_setor(_material_do_piso(doc, DB, piso), tipo, cfg),\n            \"tipo_piso\": tipo,\n            \"nivel\": nivel.Name,\n            \"nivel_id\": nivel.Id,\n            \"elev\": nivel.Elevation,\n            \"lacos\": lacos,\n            \"area\": area_salas(lacos),\n            \"sem_parede\": sem_parede(nome, cfg[\"sem_parede\"]),\n        })\n    return salas, sem_nome, curvas\n\n\ndef _tipos(doc, DB, classe, filtro=None):\n    tipos = [t for t in DB.FilteredElementCollector(doc).OfClass(classe) if filtro is None or filtro(t)]\n    return dict((_nome(DB, t), t) for t in tipos)\n\n\ndef _chave(nome):\n    \"\"\"Nome de tipo comparado sem caixa, acento e espaços sobrando.\"\"\"\n    return \" \".join(_sem_acento(nome).split())\n\n\ndef _escolher(tipos, nome):\n    if nome:\n        achados = [t for n, t in tipos.items() if _chave(n) == _chave(nome)]\n        return achados[0] if achados else None\n    return tipos[sorted(tipos)[0]] if tipos else None\n\n\ndef _nivel_acima(doc, DB, elev):\n    acima = [n for n in DB.FilteredElementCollector(doc).OfClass(DB.Level) if n.Elevation > elev + 1.0]\n    return min(acima, key=lambda n: n.Elevation) if acima else None\n\n\ndef _marcados(doc, DB):\n    achados = []\n    for classe in (DB.Wall, DB.Floor):\n        for e in DB.FilteredElementCollector(doc).OfClass(classe).WhereElementIsNotElementType():\n            if _comentario(DB, e) == MARCA:\n                achados.append(e.Id)\n    for e in DB.FilteredElementCollector(doc).OfCategory(DB.BuiltInCategory.OST_Rooms):\n        if _comentario(DB, e) == MARCA:\n            achados.append(e.Id)\n    return achados\n\n\n# --- falhas do Revit (mesmo padrão do TCC_Lotes) -------------------------------------\n\n_FALHAS = {\"erros\": [], \"avisos\": []}\n_SEQUENCIA = [0]\n\n\ndef _classe_coletor(DB):\n    \"\"\"Descarta avisos (anotando) e desfaz o pavimento se houver erro de verdade.\"\"\"\n\n    def preprocessar(self, acessor):\n        tem_erro = False\n        for falha in acessor.GetFailureMessages():\n            texto = falha.GetDescriptionText()\n            if falha.GetSeverity() == DB.FailureSeverity.Warning:\n                _FALHAS[\"avisos\"].append(texto)\n                acessor.DeleteWarning(falha)\n            else:\n                _FALHAS[\"erros\"].append(texto)\n                tem_erro = True\n        if tem_erro:\n            return DB.FailureProcessingResult.ProceedWithRollBack\n        return DB.FailureProcessingResult.Continue\n\n    _SEQUENCIA[0] += 1\n    namespace = \"TCC.Salas.Coletor%d_%d\" % (os.getpid(), _SEQUENCIA[0])\n    return type(\"ColetorFalhasSalas\", (DB.IFailuresPreprocessor,), {\n        \"__namespace__\": namespace,\n        \"PreprocessFailures\": preprocessar,\n    })\n\n\ndef _transacao(doc, DB, nome, coletor):\n    t = DB.Transaction(doc, nome)\n    if coletor is not None:\n        opcoes = t.GetFailureHandlingOptions()\n        opcoes.SetFailuresPreprocessor(coletor)\n        opcoes.SetClearAfterRollback(True)\n        t.SetFailureHandlingOptions(opcoes)\n    return t\n\n\ndef _rodar(doc, DB, nome, coletor, acao):\n    \"\"\"Executa `acao()` numa transação; devolve (ok, resultado, erros).\"\"\"\n    del _FALHAS[\"erros\"][:]\n    t = _transacao(doc, DB, nome, coletor)\n    t.Start()\n    try:\n        resultado = acao()\n    except Exception as erro:\n        t.RollBack()\n        return False, None, [str(erro)]\n    ok = t.Commit() == DB.TransactionStatus.Committed\n    return ok, resultado, list(_FALHAS[\"erros\"])\n\n\n# --- criação --------------------------------------------------------------------------\n\n\ndef _xyz(DB, p, z):\n    return DB.XYZ(p[0] / FT_TO_M, p[1] / FT_TO_M, z)\n\n\ndef _criar_paredes(doc, DB, paredes, nivel, tipos, cfg):\n    acima = _nivel_acima(doc, DB, nivel.Elevation) if cfg[\"ate_nivel_acima\"] else None\n    altura = (acima.Elevation - nivel.Elevation) if acima is not None else cfg[\"altura_m\"] / FT_TO_M\n    criadas = 0\n    for p in paredes:\n        tipo = tipos[p[\"tipo\"]]\n        a, b = p[\"a\"], p[\"b\"]\n        if p[\"tipo\"] == \"externa\" and cfg[\"externa_face_interna\"]:\n            a, b = deslocar_externa(p, tipo.Width * FT_TO_M)\n        linha = DB.Line.CreateBound(_xyz(DB, a, nivel.Elevation), _xyz(DB, b, nivel.Elevation))\n        parede = DB.Wall.Create(doc, linha, tipo.Id, nivel.Id, altura, 0.0, False, False)\n        if acima is not None:\n            restricao = parede.get_Parameter(DB.BuiltInParameter.WALL_HEIGHT_TYPE)\n            if restricao is not None and not restricao.IsReadOnly:\n                restricao.Set(acima.Id)\n        _marcar(DB, parede)\n        criadas += 1\n    return criadas\n\n\ndef _definir(DB, elemento, parametro, valor):\n    p = elemento.get_Parameter(parametro)\n    if p is not None and not p.IsReadOnly:\n        p.Set(valor)\n\n\ndef _criar_ambientes(doc, DB, salas, nivel):\n    criados = 0\n    for s in salas:\n        if s[\"sem_parede\"]:\n            continue\n        x, y = ponto_interno(s[\"lacos\"])\n        ambiente = doc.Create.NewRoom(nivel, DB.UV(x / FT_TO_M, y / FT_TO_M))\n        _definir(DB, ambiente, DB.BuiltInParameter.ROOM_NAME, s[\"nome\"])\n        _definir(DB, ambiente, DB.BuiltInParameter.ROOM_DEPARTMENT, s[\"setor\"])\n        _marcar(DB, ambiente)\n        criados += 1\n    return criados\n\n\ndef _criar_pisos(doc, DB, salas, nivel, tipos_piso, cfg):\n    from System.Collections.Generic import List\n\n    criados = 0\n    for s in salas:\n        nome_tipo = cfg[\"piso_por_setor\"].get(s[\"setor\"]) or cfg[\"piso_oficial\"]\n        tipo = _escolher(tipos_piso, nome_tipo) if nome_tipo else None\n        if tipo is None:\n            continue\n        lacos = List[DB.CurveLoop]()\n        for laco in s[\"lacos\"]:\n            loop = DB.CurveLoop()\n            pts = [_xyz(DB, p, nivel.Elevation) for p in laco]\n            for a, b in zip(pts, pts[1:] + pts[:1]):\n                loop.Append(DB.Line.CreateBound(a, b))\n            lacos.Add(loop)\n        piso = DB.Floor.Create(doc, lacos, tipo.Id, nivel.Id)\n        _marcar(DB, piso)\n        criados += 1\n    return criados\n\n\ndef _salvar_csv(doc, salas):\n    pasta = os.path.dirname(doc.PathName or \"\") or os.path.expanduser(\"~\")\n    base = os.path.splitext(os.path.basename(doc.PathName or \"modelo\"))[0]\n    caminho = os.path.join(pasta, \"salas_%s.csv\" % base)\n    with io.open(caminho, \"w\", encoding=\"utf-8-sig\") as f:  # BOM: Excel abre com acento\n        f.write(tabela_csv(salas))\n    return caminho\n\n\ndef executar(doc, DB, executar_criacao, config_texto, iniciar=None, concluir=None):\n    cfg = ler_config(config_texto)\n    linhas = [\n        \"SALAS → PAREDES — \" + (\"EXECUÇÃO\" if executar_criacao else \"SIMULAÇÃO (nada foi alterado)\"),\n        \"\",\n    ]\n    salas, sem_nome, curvas = ler_salas(doc, DB, cfg)\n    if not salas:\n        linhas.append(\"Nenhum piso com nome no Comentários%s.\" % (\n            \" nos níveis %s\" % cfg[\"niveis\"] if cfg[\"niveis\"] else \"\"))\n        return \"\\n\".join(linhas)\n\n    por_nivel = defaultdict(list)\n    for s in salas:\n        por_nivel[(s[\"elev\"], s[\"nivel\"])].append(s)\n\n    tipos_parede = _tipos(doc, DB, DB.WallType, lambda t: t.Kind == DB.WallKind.Basic)\n    tipos_piso = _tipos(doc, DB, DB.FloorType)\n    escolha = {\n        \"interna\": _escolher(tipos_parede, cfg[\"parede_interna\"]),\n        \"externa\": _escolher(tipos_parede, cfg[\"parede_externa\"] or cfg[\"parede_interna\"]),\n    }\n\n    linhas.append(\"Salas lidas: %d em %d pavimento(s) · pisos sem nome (ignorados): %d\" % (\n        len(salas), len(por_nivel), sem_nome))\n    if curvas:\n        linhas.append(\"  %d bordas curvas viraram trechos retos (paredes em segmentos).\" % curvas)\n    linhas.append(\"\")\n    linhas.append(\"Setores (área de piso das salas):\")\n    total = 0.0\n    for setor, n, a in resumo_setores(salas):\n        linhas.append(\"  %-28s %3d salas  %9.2f m²\" % (setor, n, a))\n        total += a\n    linhas.append(\"  %-28s %3d salas  %9.2f m²\" % (\"TOTAL\", len(salas), total))\n    linhas.append(\"  (setor vem do %s do piso; renomeie com \\\"mapa_setores\\\")\" % (\n        \"tipo\" if cfg[\"setor_de\"] == \"tipo\" else \"material\"))\n\n    planos = {}\n    linhas.append(\"\")\n    linhas.append(\"Paredes planejadas (junta até %.2f m · altura %s%s):\" % (\n        cfg[\"junta_max_m\"],\n        \"até o nível acima\" if cfg[\"ate_nivel_acima\"] else \"%.2f m\" % cfg[\"altura_m\"],\n        \" · pedaços da mesma sala sem parede entre si\" if cfg[\"unir_mesmo_nome\"] else \"\"))\n    for (elev, nome_nivel), lista in sorted(por_nivel.items()):\n        paredes = planejar_paredes(lista, cfg[\"junta_max_m\"], cfg[\"unir_mesmo_nome\"])\n        planos[(elev, nome_nivel)] = paredes\n        tipos = Counter(p[\"tipo\"] for p in paredes)\n        compr = defaultdict(float)\n        for p in paredes:\n            compr[p[\"tipo\"]] += math.hypot(p[\"b\"][0] - p[\"a\"][0], p[\"b\"][1] - p[\"a\"][1])\n        abertas = [s[\"nome\"] for s in lista if s[\"sem_parede\"]]\n        linhas.append(\"  %s: %d salas → %d internas (%.0f m) + %d externas (%.0f m)%s\" % (\n            nome_nivel, len(lista), tipos[\"interna\"], compr[\"interna\"], tipos[\"externa\"], compr[\"externa\"],\n            \" · sem parede: %s\" % \", \".join(abertas) if abertas else \"\"))\n\n    linhas.append(\"\")\n    for lado in (\"interna\", \"externa\"):\n        t = escolha[lado]\n        linhas.append(\"Parede %s: %s\" % (lado, (\"%s (%.0f cm)\" % (_nome(DB, t), t.Width * FT_TO_M * 100)) if t else\n                                         \"NÃO ENCONTRADO: '%s'\" % cfg[\"parede_\" + lado]))\n    linhas.append(\"  tipos disponíveis: %s\" % \", \".join(sorted(tipos_parede)))\n    if cfg[\"piso_oficial\"] or cfg[\"piso_por_setor\"]:\n        faltando = [n for n in [cfg[\"piso_oficial\"]] + list(cfg[\"piso_por_setor\"].values()) if n and _escolher(tipos_piso, n) is None]\n        linhas.append(\"Piso oficial: %s%s\" % (cfg[\"piso_oficial\"] or \"(só por setor)\",\n                                              \" · NÃO ENCONTRADO: %s\" % \", \".join(faltando) if faltando else \"\"))\n        linhas.append(\"  tipos de piso disponíveis: %s\" % \", \".join(sorted(tipos_piso)))\n    else:\n        linhas.append(\"Piso oficial: não cria (informe \\\"piso_oficial\\\" com um dos tipos de piso)\")\n\n    avisos = problemas_das_salas(salas)\n    if avisos:\n        linhas.append(\"\")\n        linhas.append(\"Conferir antes de executar:\")\n        linhas += [\"  \" + a for a in avisos[:25]]\n\n    if cfg[\"salvar_tabela\"]:\n        try:\n            linhas.append(\"\")\n            linhas.append(\"Tabela de salas salva em: %s\" % _salvar_csv(doc, salas))\n        except Exception as erro:\n            linhas.append(\"Tabela de salas não foi salva: %s\" % erro)\n\n    existentes = _marcados(doc, DB)\n    linhas.append(\"Elementos criados antes por este script: %d (serão apagados e recriados)\" % len(existentes))\n\n    if not executar_criacao:\n        linhas += [\"\", \"Com Executar = True: apaga os %d antigos e cria paredes%s%s.\" % (\n            len(existentes),\n            \", ambientes\" if cfg[\"criar_ambientes\"] else \"\",\n            \" e pisos oficiais\" if (cfg[\"piso_oficial\"] or cfg[\"piso_por_setor\"]) else \"\")]\n        return \"\\n\".join(linhas)\n    if cfg[\"criar_paredes\"] and (escolha[\"interna\"] is None or escolha[\"externa\"] is None):\n        linhas += [\"\", \"Parei: tipo de parede não encontrado (veja os nomes disponíveis acima).\"]\n        return \"\\n\".join(linhas)\n\n    if iniciar:\n        iniciar()  # no Dynamo: fecha a transação dele para usarmos as nossas\n    try:\n        coletor = _classe_coletor(DB)()\n    except Exception:\n        coletor = None\n    grupo = DB.TransactionGroup(doc, \"TCC: salas → paredes\")\n    grupo.Start()\n    resultado = []\n    avisos_revit = Counter()\n    try:\n        ok, apagados, erros = _rodar(doc, DB, \"TCC: apagar automáticos\", coletor,\n                                     lambda: len(list(doc.Delete(_lista_ids(DB, existentes)))) if existentes else 0)\n        resultado.append(\"Apagados (execução anterior): %s\" % (apagados if ok else \"FALHOU %s\" % erros))\n        for (elev, nome_nivel), lista in sorted(por_nivel.items()):\n            nivel = doc.GetElement(lista[0][\"nivel_id\"])\n            partes = []\n            if cfg[\"criar_paredes\"]:\n                ok, n, erros = _rodar(doc, DB, \"TCC: paredes %s\" % nome_nivel, coletor,\n                                      lambda: _criar_paredes(doc, DB, planos[(elev, nome_nivel)], nivel, escolha, cfg))\n                partes.append(\"paredes %s\" % (n if ok else \"DESFEITAS: %s\" % \"; \".join(erros[:3])))\n            if cfg[\"criar_ambientes\"]:\n                ok, n, erros = _rodar(doc, DB, \"TCC: ambientes %s\" % nome_nivel, coletor,\n                                      lambda: _criar_ambientes(doc, DB, lista, nivel))\n                partes.append(\"ambientes %s\" % (n if ok else \"DESFEITOS: %s\" % \"; \".join(erros[:3])))\n            if cfg[\"piso_oficial\"] or cfg[\"piso_por_setor\"]:\n                ok, n, erros = _rodar(doc, DB, \"TCC: pisos %s\" % nome_nivel, coletor,\n                                      lambda: _criar_pisos(doc, DB, lista, nivel, tipos_piso, cfg))\n                partes.append(\"pisos %s\" % (n if ok else \"DESFEITOS: %s\" % \"; \".join(erros[:3])))\n            resultado.append(\"  %s: %s\" % (nome_nivel, \" · \".join(partes)))\n            avisos_revit.update(_FALHAS[\"avisos\"])\n            del _FALHAS[\"avisos\"][:]\n    finally:\n        grupo.Assimilate()  # um único \"Desfazer\" (Ctrl+Z) para a execução inteira\n        if concluir:\n            concluir()\n    linhas += [\"\"] + resultado\n    if avisos_revit:\n        linhas.append(\"Avisos do Revit (descartados):\")\n        linhas += [\"  %dx %s\" % (n, t) for t, n in avisos_revit.most_common(10)]\n    linhas += [\"\", \"Ctrl+Z desfaz tudo de uma vez. Confira em 3D e na planta de cada pavimento.\"]\n    return \"\\n\".join(linhas)\n\n\ndef _lista_ids(DB, ids):\n    from System.Collections.Generic import List\n\n    lista = List[DB.ElementId]()\n    for i in ids:\n        lista.Add(i)\n    return lista\n\n\n# ---- entrada Dynamo ----\nimport traceback\n\nimport clr\n\nclr.AddReference(\"RevitAPI\")\nclr.AddReference(\"RevitServices\")\nfrom Autodesk.Revit import DB  # noqa: E402\nfrom RevitServices.Persistence import DocumentManager  # noqa: E402\nfrom RevitServices.Transactions import TransactionManager  # noqa: E402\n\n_doc = DocumentManager.Instance.CurrentDBDocument\n\ntry:\n    OUT = executar(\n        _doc,\n        DB,\n        bool(IN[0]),\n        IN[1],\n        iniciar=TransactionManager.Instance.ForceCloseTransaction,\n    )\nexcept Exception:\n    OUT = \"ERRO — copie este texto e mande para análise:\\n\" + traceback.format_exc()\n",
+      "Engine": "CPython3",
+      "VariableInputPorts": true,
+      "Id": "aacf4333-431d-4ddd-ae57-1718183c4e29",
+      "Inputs": [
+        {
+          "Id": "a6bf1c4a-3b74-4945-97be-0be89b95254e",
+          "Name": "IN[0]",
+          "Description": "Executar (False = simulação)",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        },
+        {
+          "Id": "0553b4f2-cf8f-482c-a9ea-2c30915a049c",
+          "Name": "IN[1]",
+          "Description": "Configuração (JSON)",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Outputs": [
+        {
+          "Id": "051e8ee8-6f3c-4854-b8d3-d418f3698b75",
+          "Name": "OUT",
+          "Description": "Relatório",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Replication": "Disabled",
+      "Description": "Pisos-sala (nome no Comentários, setor no material) → paredes, ambientes e tabela de áreas."
+    },
+    {
+      "ConcreteType": "CoreNodeModels.Watch, CoreNodeModels",
+      "NodeType": "ExtensionNode",
+      "Id": "06767776-a709-402f-9c56-a06f5f2a8125",
+      "Inputs": [
+        {
+          "Id": "628370ec-dd02-443b-81c5-1451c7793480",
+          "Name": "",
+          "Description": "Relatório",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Outputs": [
+        {
+          "Id": "103dfcfe-aa09-41e6-bf9d-d66f4aa2119e",
+          "Name": "",
+          "Description": "",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Replication": "Disabled",
+      "Description": "Relatório"
+    }
+  ],
+  "Connectors": [
+    {
+      "Start": "2c32aa7c-613b-4cce-9254-8967a97faa8a",
+      "End": "a6bf1c4a-3b74-4945-97be-0be89b95254e",
+      "Id": "1e0cc88a-e3fa-4dfc-8aea-04eecf5f3720",
+      "IsHidden": "False"
+    },
+    {
+      "Start": "725bfa68-60a3-4629-9668-9a094d0283b1",
+      "End": "0553b4f2-cf8f-482c-a9ea-2c30915a049c",
+      "Id": "65190aae-b0cb-4444-bf05-b52c092dca24",
+      "IsHidden": "False"
+    },
+    {
+      "Start": "051e8ee8-6f3c-4854-b8d3-d418f3698b75",
+      "End": "628370ec-dd02-443b-81c5-1451c7793480",
+      "Id": "bc5acb03-879a-4ae0-b39d-584aa87a7334",
+      "IsHidden": "False"
+    }
+  ],
+  "Dependencies": [],
+  "NodeLibraryDependencies": [],
+  "Thumbnail": "",
+  "GraphDocumentationURL": null,
+  "ExtensionWorkspaceData": [],
+  "Author": "TCC CTJ",
+  "Linting": {
+    "activeLinter": "None",
+    "linterIdMap": {}
+  },
+  "Bindings": [],
+  "View": {
+    "Dynamo": {
+      "ScaleFactor": 1.0,
+      "HasRunWithoutCrash": true,
+      "IsVisibleInDynamoLibrary": true,
+      "Version": "3.4.0",
+      "RunType": "Manual",
+      "RunPeriod": 1000
+    },
+    "Camera": {
+      "Name": "_Background Preview",
+      "EyeX": -17.0,
+      "EyeY": 24.0,
+      "EyeZ": 50.0,
+      "LookX": 12.0,
+      "LookY": -13.0,
+      "LookZ": -58.0,
+      "UpX": 0.0,
+      "UpY": 1.0,
+      "UpZ": 0.0
+    },
+    "NodeViews": [
+      {
+        "Id": "e7e946c6-c093-41fd-a028-7df1a4103053",
+        "Name": "Executar (False = simulação)",
+        "IsSetAsInput": true,
+        "IsSetAsOutput": false,
+        "Excluded": false,
+        "ShowGeometry": true,
+        "X": 70.0,
+        "Y": 180.0
+      },
+      {
+        "Id": "545ed961-265d-4947-abc4-a773421d3348",
+        "Name": "Configuração (JSON)",
+        "IsSetAsInput": true,
+        "IsSetAsOutput": false,
+        "Excluded": false,
+        "ShowGeometry": true,
+        "X": 70.0,
+        "Y": 315.0
+      },
+      {
+        "Id": "aacf4333-431d-4ddd-ae57-1718183c4e29",
+        "Name": "TCC Salas",
+        "IsSetAsInput": false,
+        "IsSetAsOutput": false,
+        "Excluded": false,
+        "ShowGeometry": true,
+        "X": 450.0,
+        "Y": 200.0
+      },
+      {
+        "Id": "06767776-a709-402f-9c56-a06f5f2a8125",
+        "Name": "Relatório",
+        "IsSetAsInput": false,
+        "IsSetAsOutput": true,
+        "Excluded": false,
+        "ShowGeometry": true,
+        "X": 950.0,
+        "Y": 200.0
+      }
+    ],
+    "Annotations": [
+      {
+        "Id": "9c67344d-0855-4e52-aa2d-c86c8dc62c98",
+        "Title": "TCC — EXECUÇÃO MANUAL",
+        "Description": "Rode primeiro com False (simulação) num pavimento: \"niveis\": [\"Térreo\"]. Depois True. Ctrl+Z desfaz tudo.",
+        "Left": 60.0,
+        "Top": 35.0,
+        "Width": 720.0,
+        "Height": 105.0,
+        "FontSize": 30.0,
+        "InitialTop": 35.0,
+        "InitialHeight": 105.0,
+        "TextblockHeight": 75.0,
+        "Background": "#FFC1D676",
+        "IdList": [],
+        "IsExpanded": true,
+        "AnnotationText": "Rode primeiro com False (simulação) num pavimento: \"niveis\": [\"Térreo\"]. Depois True. Ctrl+Z desfaz tudo.",
+        "IsSelectedIsolated": false
+      }
+    ],
+    "X": 0.0,
+    "Y": 0.0,
+    "Zoom": 1.0
+  }
+}
