@@ -148,12 +148,16 @@ def input_node(kind, label, value, x, y):
 def graph(name, description, scripts, entrada, note, inputs=()):
     py_id, watch_id = uid(), uid()
     code = "\n\n".join((SCRIPTS / s).read_text(encoding="utf-8") for s in scripts) + entrada
+    py_inputs = [port("IN[%d]" % i, label) for i, (_, label, _) in enumerate(inputs)]
+    py_output, watch_input = port("OUT", "Relatório"), port("", "Relatório")
+    # O Dynamo liga porta com porta: Start = Id da porta de saída, End = Id da porta de entrada.
     input_nodes, input_views, connectors = [], [], []
     for index, (kind, label, value) in enumerate(inputs):
         node, view = input_node(kind, label, value, 70.0, 180.0 + index * 135.0)
         input_nodes.append(node)
         input_views.append(view)
-        connectors.append({"StartIndex": 0, "EndIndex": index, "Id": uid(), "Start": node["Id"], "End": py_id})
+        connectors.append({"Start": node["Outputs"][0]["Id"], "End": py_inputs[index]["Id"], "Id": uid(), "IsHidden": "False"})
+    connectors.append({"Start": py_output["Id"], "End": watch_input["Id"], "Id": uid(), "IsHidden": "False"})
     nodes = input_nodes + [
         {
             "ConcreteType": "PythonNodeModels.PythonNode, PythonNodeModels",
@@ -162,8 +166,8 @@ def graph(name, description, scripts, entrada, note, inputs=()):
             "Engine": "CPython3",
             "VariableInputPorts": True,
             "Id": py_id,
-            "Inputs": [port("IN[%d]" % i, label) for i, (_, label, _) in enumerate(inputs)],
-            "Outputs": [port("OUT", "Relatório")],
+            "Inputs": py_inputs,
+            "Outputs": [py_output],
             "Replication": "Disabled",
             "Description": description,
         },
@@ -171,7 +175,7 @@ def graph(name, description, scripts, entrada, note, inputs=()):
             "ConcreteType": "CoreNodeModels.Watch, CoreNodeModels",
             "NodeType": "ExtensionNode",
             "Id": watch_id,
-            "Inputs": [port("", "Relatório")],
+            "Inputs": [watch_input],
             "Outputs": [port("", "")],
             "Replication": "Disabled",
             "Description": "Relatório",
@@ -186,8 +190,7 @@ def graph(name, description, scripts, entrada, note, inputs=()):
         "Inputs": [],
         "Outputs": [],
         "Nodes": nodes,
-        "Connectors": connectors
-        + [{"StartIndex": 0, "EndIndex": 0, "Id": uid(), "Start": py_id, "End": watch_id}],
+        "Connectors": connectors,
         "Dependencies": [],
         "NodeLibraryDependencies": [],
         "Thumbnail": "",
